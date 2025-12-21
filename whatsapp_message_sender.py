@@ -9,8 +9,15 @@ time.sleep(1)
 os.system("start whatsapp:")
 time.sleep(1)
 
+pyautogui.press('tab')
+time.sleep(1)
+pyautogui.press('tab')
+time.sleep(1)
+pyautogui.press('tab')
+time.sleep(1)
 
-pyautogui.typewrite("765849600", interval=0)
+
+pyautogui.typewrite("775088957", interval=0)
 time.sleep(1)
 pyautogui.press('tab')
 time.sleep(1)
