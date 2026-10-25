@@ -35,48 +35,128 @@ def check_bluetooth():
     return True
 
 
+
 def scan_devices():
-    """Scan for nearby Bluetooth devices."""
+    """Scan nearby devices and collect names as they are discovered."""
+    import selectors
+
     print("\nScanning for Bluetooth devices...")
-    print("Please wait 15 seconds.\n")
-
-    # Power on the adapter and enable discovery.
-    run_command(["bluetoothctl", "power", "on"])
-    run_command(["bluetoothctl", "agent", "on"])
-    run_command(["bluetoothctl", "default-agent"])
-
-    output = run_command(
-        ["bluetoothctl", "--timeout", "15", "scan", "on"],
-        timeout=22
-    )
-
-    # Get devices known to BlueZ from the scan.
-    devices_output = run_command(
-        ["bluetoothctl", "devices"],
-        timeout=10
-    )
+    print("Waiting 15 seconds for device names...\n")
 
     devices = {}
-    for line in devices_output.splitlines():
-        match = re.search(
-            r"Device\s+([0-9A-Fa-f:]{17})\s+(.+)",
-            line
-        )
-        if match:
-            mac = match.group(1).upper()
-            name = match.group(2).strip()
-            devices[mac] = name
+    process = None
 
-    # Also collect device names from the scan output.
-    for line in output.splitlines():
-        match = re.search(
-            r"Device\s+([0-9A-Fa-f:]{17})\s+(.+)",
-            line
+    try:
+        process = subprocess.Popen(
+            ["bluetoothctl"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
         )
-        if match:
-            mac = match.group(1).upper()
-            name = match.group(2).strip()
-            devices[mac] = name
+
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ)
+
+        def send_command(command):
+            process.stdin.write(command + "\n")
+            process.stdin.flush()
+
+        send_command("power on")
+        send_command("agent on")
+        send_command("default-agent")
+        send_command("scan on")
+
+        start = time.monotonic()
+
+        while time.monotonic() - start < 15:
+            events = selector.select(timeout=0.5)
+
+            for key, _ in events:
+                line = key.fileobj.readline().strip()
+
+                # Example: [NEW] Device AA:BB:CC:DD:EE:FF My Phone
+                match = re.search(
+                    r"(?:\[NEW\]\s+)?Device\s+"
+                    r"([0-9A-Fa-f:]{17})\s+(.+)",
+                    line
+                )
+
+                if match:
+                    mac = match.group(1).upper()
+                    name = match.group(2).strip()
+
+                    if name and name.lower() not in (
+                        "unknown", "n/a"
+                    ):
+                        devices[mac] = name
+
+                # Example: [CHG] Device AA:BB:CC:DD:EE:FF Name: My Phone
+                match = re.search(
+                    r"Device\s+([0-9A-Fa-f:]{17})\s+"
+                    r"(?:Name|Alias):\s*(.+)",
+                    line
+                )
+
+                if match:
+                    mac = match.group(1).upper()
+                    name = match.group(2).strip()
+
+                    if name:
+                        devices[mac] = name
+
+        send_command("scan off")
+        time.sleep(1)
+
+        # Ask BlueZ for all known devices as a fallback.
+        send_command("devices")
+        time.sleep(1)
+
+        while selector.select(timeout=0.2):
+            line = process.stdout.readline().strip()
+
+            match = re.search(
+                r"Device\s+([0-9A-Fa-f:]{17})\s+(.+)",
+                line
+            )
+
+            if match:
+                mac = match.group(1).upper()
+                name = match.group(2).strip()
+
+                if name:
+                    devices.setdefault(mac, name)
+
+        # Query each device for its full name or alias.
+        for mac in list(devices.keys()):
+            info = run_command(
+                ["bluetoothctl", "info", mac],
+                timeout=5
+            )
+
+            name_match = re.search(
+                r"^\s*(?:Name|Alias):\s*(.+)$",
+                info,
+                re.MULTILINE
+            )
+
+            if name_match:
+                devices[mac] = name_match.group(1).strip()
+
+        selector.close()
+
+    except Exception as e:
+        print(f"Bluetooth scan error: {e}")
+
+    finally:
+        if process is not None:
+            try:
+                process.terminate()
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
 
     return devices
 
